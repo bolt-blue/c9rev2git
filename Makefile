@@ -1,10 +1,10 @@
 # Currently set up for debug release
 CC=gcc
-CFLAGS=-Og -fstack-protector-all
+CFLAGS=-g -fstack-protector-all
 LDLIBS=-lsqlite3
 
 .PHONY: all
 all: c9rev2git
 
-c9rev2git:
-	$(CC) $(CFLAGS) -o $@ src/$@.c $(LDFLAGS) $(LDLIBS)
+c9rev2git: src/c9rev2git.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS)
