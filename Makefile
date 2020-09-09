@@ -1,6 +1,6 @@
 # Currently set up for debug release
 CC=gcc
-CFLAGS=-g -fstack-protector-all
+CFLAGS=-g -fstack-protector-all -DDEBUG
 LDLIBS=-lgit2 -lsqlite3
 
 # ref: https://libgit2.org/docs/guides/build-and-link/
