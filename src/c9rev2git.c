@@ -37,12 +37,6 @@
 
 /* ========================================================================== */
 
-enum OPTS
-{
-    // Must be powers of two
-    QUIET = 0x1
-};
-
 typedef struct mem_pool
 {
     BYTE *base;
@@ -75,6 +69,9 @@ rev_t *REV_LIST;
 
 unsigned int DOC_CNT;
 unsigned int REV_CNT;
+
+// Boolean to limit prints to stdout
+int QUIET = 0;
 
 /* ========================================================================== */
 
@@ -244,6 +241,11 @@ static int process_doc_cb(void *repo_fd, int col_cnt, char **col_data, char **co
         // Update total directory path length
         dir_len = cnt;
 
+        if (QUIET == 0)
+        {
+            fprintf(stdout, "[mkdir] Creating '%s'\n", dir_path);
+        }
+
         if (mkdirat(*(int *)repo_fd, dir_path, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH) == -1)
         {
             if (errno == EEXIST)
@@ -340,7 +342,7 @@ int main(int argc, char **argv)
         {
             case 'q':
                 // quiet - prevent output to stdout
-                flags |= QUIET;
+                QUIET = 1;
                 break;
             case 'o':
                 // Alter the output directory name
@@ -369,9 +371,9 @@ int main(int argc, char **argv)
     char *filepath = argv[optind];
     sqlite3 *db;
 
-    if ((flags & QUIET) == 0)
+    if (QUIET == 0)
     {
-        fprintf(stdout, "Opening database: %s\n", filepath);
+        fprintf(stdout, "[INFO] Opening database: %s\n", filepath);
     }
 
     if (sqlite3_open(filepath, &db) != SQLITE_OK)
@@ -406,9 +408,9 @@ int main(int argc, char **argv)
     // Set up git repo
     git_repository *repo = NULL;
 
-    if ((flags & QUIET) == 0)
+    if (QUIET == 0)
     {
-        fprintf(stdout, "Initialising git repo...\n");
+        fprintf(stdout, "[INFO] Initialising git repo...\n");
     }
 
     // Temp variable for the result value of various function calls to follow
@@ -420,9 +422,9 @@ int main(int argc, char **argv)
         git2_exit_with_error(res);
     }
 
-    if ((flags & QUIET) == 0)
+    if (QUIET == 0)
     {
-        fprintf(stdout, "Importing document data...\n");
+        fprintf(stdout, "[INFO] Importing document data...\n");
     }
 
     char *sql_err = NULL;
@@ -446,9 +448,9 @@ int main(int argc, char **argv)
         return 3;
     }
 
-    if ((flags & QUIET) == 0)
+    if (QUIET == 0)
     {
-        fprintf(stdout, "Importing revision data...\n");
+        fprintf(stdout, "[INFO] Importing revision data...\n");
     }
 
     // REV_LIST array will be stored contiguously in STRUCT_POOL
@@ -485,9 +487,9 @@ int main(int argc, char **argv)
 
 CLEANUP:
 
-    if ((flags & QUIET) == 0)
+    if (QUIET == 0)
     {
-        fprintf(stdout, "Cleaning up memory...\n");
+        fprintf(stdout, "[INFO] Cleaning up memory...\n");
     }
 
     sqlite3_free(sql_err);
