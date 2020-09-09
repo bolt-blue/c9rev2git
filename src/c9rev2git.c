@@ -458,10 +458,10 @@ int main(int argc, char **argv)
     // TODO : Implement better memory alignment
     REV_LIST = (rev_t *)STRUCT_POOL.cur;
 
-    // Query to select and store all relevent revision data
+    // Query to select relevant revision data - with optimal ordering
     char *rev_query = "SELECT document_id AS doc_id, revNum AS rev_num, operation AS op, length(operation) AS op_len FROM Revisions ORDER BY document_id ASC, revNum ASC";
 
-    // Process all revisions in database
+    // Store data on all revisions in database
     res = sqlite3_exec(db, rev_query, process_rev_cb, 0, &sql_err);
     if (res != SQLITE_OK)
     {
@@ -473,17 +473,24 @@ int main(int argc, char **argv)
         return 3;
     }
 
-    // TODO : Process each revision for the each target file
-    // - Update the file
-    // - Create a new `git commit`
+    // TODO : Process each revision for each target file
     //
     // - For each document:
     //   - Open read write
-    //   - For each revision:
+    //
+    //   - For each revision - working initially from last to first:
+    //     ~ Add, Delete or Retain as necessary (with instruction reversal)
+    //         to return to the docs "initial state"
+    //
+    //   - Save the changes to disk
+    //   - Run `git add`
+    //   - Run `git commit` with basic message
+    //
+    //   - For each revision - working from first to last:
     //     ~ Add, Delete or Retain as necessary
-    //     ~ Save the changes to disk
+    //     ~ Save changes to disk
     //     ~ Run `git add`
-    //     ~ Run `git commit` with basic message
+    //     ~ Run `git commit`
 
 CLEANUP:
 
