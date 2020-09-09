@@ -51,7 +51,7 @@ typedef struct mem_pool
 } mem_pool_t;
 
 typedef struct rev {
-    int id;
+    int num;
     char *op;
 } rev_t;
 
@@ -140,11 +140,59 @@ void mem_free(mem_pool_t *pool)
 /* ========================================================================== */
 
 /*
+ * sqlite3 Callback Reference:
+ *   data      : Data provided in the 4th argument of `sqlite3_exec()`
+ *   col_cnt   : The number of columns in row
+ *   col_data  : An array of strings representing fields in the row
+ *   col_names : An array of strings representing column names
+ */
+
+/*
  * Process each file revision
+ *   - Store revision data in memory
+ *
+ * Expects:
+ *   data to be null
+ *   col_data[0] to be 'doc_id'
+ *   col_data[1] to be 'rev_num'
+ *   col_data[2] to be 'op'
+ *   col_data[3] to be 'op_len'
  */
 static int process_rev_cb(void *unused, int col_cnt, char **col_data, char **col_names)
 {
-    // TODO
+    // WARNING : `col_data` will contain NULL pointers where there is no value stored
+    int doc_id  = atoi(col_data[0]);
+    int rev_num = atoi(col_data[1]);
+    int op_len  = atoi(col_data[3]);
+    char *op    = col_data[2];
+
+    // Thanks to the SQL query, we can guarantee the revisions are in
+    // ascending document id order, and per doc in ascending revision number.
+    // Should give better memory access when working with a given document.
+
+    // Append rev directly to STRUCT_POOL
+    // They will be contiguous, and managed elsewhere
+    rev_t *rev = (rev_t *)mem_push(&STRUCT_POOL, sizeof(rev_t));
+
+    rev->num = rev_num;
+
+    // Operation strings will also be contiguous in STRING_POOL
+    // (can therefore also be accessed directly - null pointer separated)
+    rev->op = mem_push(&STRING_POOL, op_len + 1);
+
+    strncpy(rev->op, op, op_len + 1);
+
+    // Document id's are 1-indexed in the database
+    doc_t *doc = DOC_LIST + doc_id - 1;
+
+    // Point doc to the first revision
+    if (!doc->revisions)
+    {
+        doc->revisions = rev;
+    }
+    doc->rev_cnt++;
+
+    REV_CNT++;
 
     return 0;
 }
@@ -152,13 +200,8 @@ static int process_rev_cb(void *unused, int col_cnt, char **col_data, char **col
 /*
  * Process each target file
  *   - Create any directory tree as required
+ *   - Store document data in memory
  *   - Save copy of original file to repo, for further processing
- *
- * Arg Reference:
- *   data      : Data provided in the 4th argument of `sqlite3_exec()`
- *   col_cnt   : The number of columns in row
- *   col_data  : An array of strings representing fields in the row
- *   col_names : An array of strings representing column names
  *
  * Expects:
  *   data to be a file descriptor for the repository directory
@@ -170,7 +213,6 @@ static int process_rev_cb(void *unused, int col_cnt, char **col_data, char **col
 */
 static int process_doc_cb(void *repo_fd, int col_cnt, char **col_data, char **col_names)
 {
-    // TODO : Confirm each column by name, rather than assuming ?
     // WARNING : `col_data` will contain NULL pointers where there is no value stored
     char *doc_id    = col_data[0];
     char *path      = col_data[1];
@@ -220,14 +262,15 @@ static int process_doc_cb(void *repo_fd, int col_cnt, char **col_data, char **co
         }
     }
 
-    // This will inherently account for the null terminator
-    filename_len = cnt - dir_len;
-
-    // Remember to account for null terminator
-    char filename[filename_len + 1];
-    strncpy(filename, path + dir_len + 1, filename_len);
-
-    //printf("[DEBUG] dir: %-40s | filename: %-30s | doc_id: %5s\n", dir_path, filename, doc_id);
+    // TODO : Determine if storing the filename separately is of any worth
+//    // This will inherently account for the null terminator
+//    filename_len = cnt - dir_len;
+//
+//    // Remember to account for null terminator
+//    char filename[filename_len + 1];
+//    strncpy(filename, path + dir_len + 1, filename_len);
+//
+//    //printf("[DEBUG] dir: %-40s | filename: %-30s | doc_id: %5s\n", dir_path, filename, doc_id);
 
     // Thanks to the SQL query, we can guarantee the file paths are in
     // ascending document id order - which means they can be accessed
@@ -241,7 +284,7 @@ static int process_doc_cb(void *repo_fd, int col_cnt, char **col_data, char **co
     doc->rev_cnt = 0;
 
     // Save paths will also be contiguous in STRING_POOL
-    // (can therefore also be directly - null pointer separated)
+    // (can therefore also be accessed directly - null pointer separated)
     doc->save_path = mem_push(&STRING_POOL, cnt + 1);
 
     // Revisions will get set later
@@ -414,7 +457,7 @@ int main(int argc, char **argv)
     REV_LIST = (rev_t *)STRUCT_POOL.cur;
 
     // Query to select and store all relevent revision data
-    char *rev_query = "SELECT id, document_id, operation, length(operation) AS op_len FROM Revisions ORDER BY document_id ASC, id ASC";
+    char *rev_query = "SELECT document_id AS doc_id, revNum AS rev_num, operation AS op, length(operation) AS op_len FROM Revisions ORDER BY document_id ASC, revNum ASC";
 
     // Process all revisions in database
     res = sqlite3_exec(db, rev_query, process_rev_cb, 0, &sql_err);
