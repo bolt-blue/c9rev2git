@@ -141,22 +141,10 @@ void mem_free(mem_pool_t *pool)
 
 /*
  * Process each file revision
- *   - Update the file
- *   - Create a new `git commit`
  */
-static int process_revision_cb(void *unused, int col_cnt, char **col_data, char **col_names)
+static int process_rev_cb(void *unused, int col_cnt, char **col_data, char **col_names)
 {
-    // TODO :
-    //
-    // - For each filename:
-    //   - Open new file for writing
-    //   - Get a list of it's revision data
-    //   - For each revision:
-    //     ~ Add, Delete or Retain as necessary
-    //     ~ Save the changes to disk
-    //     ~ Run `git add`
-    //     ~ Run `git commit` with basic message
-    //
+    // TODO
 
     return 0;
 }
@@ -164,8 +152,7 @@ static int process_revision_cb(void *unused, int col_cnt, char **col_data, char 
 /*
  * Process each target file
  *   - Create any directory tree as required
- *   - Create a new file
- *   - Process the revisions
+ *   - Save copy of original file to repo, for further processing
  *
  * Arg Reference:
  *   data      : Data provided in the 4th argument of `sqlite3_exec()`
@@ -390,6 +377,11 @@ int main(int argc, char **argv)
         git2_exit_with_error(res);
     }
 
+    if ((flags & QUIET) == 0)
+    {
+        fprintf(stdout, "Importing document data...\n");
+    }
+
     char *sql_err = NULL;
 
     // DOC_LIST array will be stored contiguously in STRUCT_POOL
@@ -406,36 +398,56 @@ int main(int argc, char **argv)
         fprintf(stderr, "Failed to retrieve target filenames from database\n");
         fprintf(stderr, "[Error: SQL] %s\n", sql_err);
 
-        sqlite3_free(sql_err);
-        sqlite3_close(db);
+        goto CLEANUP;
 
         return 3;
     }
 
+    if ((flags & QUIET) == 0)
+    {
+        fprintf(stdout, "Importing revision data...\n");
+    }
+
     // REV_LIST array will be stored contiguously in STRUCT_POOL
     // and populated by the following sqlite3_exec()
+    // TODO : Implement better memory alignment
     REV_LIST = (rev_t *)STRUCT_POOL.cur;
 
     // Query to select and store all relevent revision data
     char *rev_query = "SELECT id, document_id, operation, length(operation) AS op_len FROM Revisions ORDER BY document_id ASC, id ASC";
 
     // Process all revisions in database
-//    res = sqlite3_exec(db, file_query, process_doc_cb, &repo_fd, &sql_err);
-//    if (res != SQLITE_OK)
-//    {
-//        fprintf(stderr, "Failed to retrieve target filenames from database\n");
-//        fprintf(stderr, "[Error: SQL] %s\n", sql_err);
-//
-//        sqlite3_free(sql_err);
-//        sqlite3_close(db);
-//
-//        return 3;
-//    }
+    res = sqlite3_exec(db, rev_query, process_rev_cb, 0, &sql_err);
+    if (res != SQLITE_OK)
+    {
+        fprintf(stderr, "Failed to retrieve revisions from database\n");
+        fprintf(stderr, "[Error: SQL] %s\n", sql_err);
+
+        goto CLEANUP;
+
+        return 3;
+    }
 
     // TODO : Process each revision for the each target file
+    // - Update the file
+    // - Create a new `git commit`
+    //
+    // - For each document:
+    //   - Open read write
+    //   - For each revision:
+    //     ~ Add, Delete or Retain as necessary
+    //     ~ Save the changes to disk
+    //     ~ Run `git add`
+    //     ~ Run `git commit` with basic message
 
-    // Clean up
+CLEANUP:
 
+    if ((flags & QUIET) == 0)
+    {
+        fprintf(stdout, "Cleaning up memory...\n");
+    }
+
+    sqlite3_free(sql_err);
     sqlite3_close(db);
 
     // Free repo initialsed by libgit2
