@@ -85,7 +85,7 @@ void git2_exit_with_error(int error)
 {
     // ref: https://libgit2.org/docs/guides/101-samples/
     const git_error *e = git_error_last();
-    fprintf(stderr, "[Error %d/%d] %s\n", error, e->klass, e->message);
+    fprintf(stderr, "[ERROR %d/%d] %s\n", error, e->klass, e->message);
     exit(error);
 }
 
@@ -167,6 +167,12 @@ static int process_rev_cb(void *unused, int col_cnt, char **col_data, char **col
     // ascending document id order, and per doc in ascending revision number.
     // Should give better memory access when working with a given document.
 
+    // Skip "empty" revisions - generally the first for each document
+    if (strcmp(op, "[]") == 0)
+    {
+        return 0;
+    }
+
     // Append rev directly to STRUCT_POOL
     // They will be contiguous, and managed elsewhere
     rev_t *rev = (rev_t *)mem_push(&STRUCT_POOL, sizeof(rev_t));
@@ -208,7 +214,7 @@ static int process_rev_cb(void *unused, int col_cnt, char **col_data, char **col
  *   col_data[3] to be 'content_len'
  *   col_data[4] to be 'rev_num'
 */
-static int process_doc_cb(void *repo_fd, int col_cnt, char **col_data, char **col_names)
+static int prepare_doc_cb(void *repo_fd, int col_cnt, char **col_data, char **col_names)
 {
     // WARNING : `col_data` will contain NULL pointers where there is no value stored
     char *doc_id    = col_data[0];
@@ -241,27 +247,32 @@ static int process_doc_cb(void *repo_fd, int col_cnt, char **col_data, char **co
         // Update total directory path length
         dir_len = cnt;
 
-        if (QUIET == 0)
-        {
-            fprintf(stdout, "[mkdir] Creating '%s'\n", dir_path);
-        }
-
         if (mkdirat(*(int *)repo_fd, dir_path, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH) == -1)
         {
             if (errno == EEXIST)
             {
                 // Don't worry if the directory already exists
+
+                if (QUIET == 0)
+                {
+                    fprintf(stdout, "[mkdir] Skipping '%s'. Already exists\n", dir_path);
+                }
                 continue;
             }
 
             // Trigger a sqlite abort
-            fprintf(stderr, "[Error] Failed to create directory '%s'. Aborting...\n", dir_path);
+            fprintf(stderr, "[ERROR] Failed to create directory '%s'. Aborting...\n", dir_path);
 
             // TODO : Implement "clean up" on failure, in main(), and remove this
             fprintf(stderr, "[WARNING] This may leave file and/or directory artefacts.\n");
 
             return 1;
         }
+        else if (QUIET == 0)
+        {
+            fprintf(stdout, "[mkdir] Creating '%s'\n", dir_path);
+        }
+
     }
 
     // TODO : Determine if storing the filename separately is of any worth
@@ -304,13 +315,155 @@ static int process_doc_cb(void *repo_fd, int col_cnt, char **col_data, char **co
 
     if (write(save_fd, contents, content_len) == -1)
     {
-        fprintf(stderr, "[Error] Failed to write out %s\n", path);
+        fprintf(stderr, "[ERROR] Failed to write out %s\n", path);
 
         close(save_fd);
         return -1;
     }
 
     close(save_fd);
+
+    return 0;
+}
+
+/* ========================================================================== */
+
+/*
+ * Modify 'op' pointer to point at the next instruction char.
+ * Returns: 1 for success, 0 for failure
+ */
+int next_op_code(char **op)
+{
+    while (**op)
+    {
+        if (**op == '"' && *(*op - 1) != '\\')
+        {
+            // The next char is an instruction
+            (*op)++;
+
+            return 1;
+        }
+        (*op)++;
+    }
+
+    return 0;
+}
+
+int reset_doc(char *op)
+{
+    // If instruction is an insertion ('i'), with no preceding or trailing retain ('r'),
+    // then we know the revision process began with an empty document
+    char *cur = op;
+    while(next_op_code(&cur))
+    {
+        if (*cur == 'r' || *cur == 'd')
+        {
+            // The revisions do not start from a "clean slate"
+            // and require full processing
+            return false;
+            break;
+        }
+    }
+    return true;
+}
+
+int revert_doc(doc_t *doc, int doc_fd)
+{
+    // TODO :
+    // NOTE : Will likely have to remove leading '\' from certain text being inserted or deleted
+    //   - For each revision - working initially from last to first:
+    //     ~ Add, Delete or Retain as necessary (with instruction reversal)
+    //         to return to the docs "initial state"
+
+    // Process each revision from last to first, with inverted operations
+
+
+
+    return 0;
+}
+
+/*
+ * Ops are square-bracketed, comma delimited, double quoted strings.
+ * An op may consist of multiple instructions, denoted by a single
+ * char at the head of each string; 'i', 'd' and 'r' for
+ * "insert", "delete" and "retain" respectively.
+ * 'i' and 'd' are followed by the text to insert or delete.
+ * 'r' is followed by an integer character count.
+ */
+int process_revisions(int repo_fd)
+{
+    for (doc_t *doc = DOC_LIST; doc < DOC_LIST + DOC_CNT; doc++)
+    {
+        char *doc_path = doc->save_path;
+
+        if (QUIET == 0)
+        {
+            fprintf(stdout, "[INFO] Processing revisions for '%s'...\n", doc_path);
+        }
+
+        if (doc->rev_num == 0)
+        {
+            // TODO
+            printf("[DEBUG] `git commit` doc with no revisions.\n");
+            // `git commit` revisionless docs and move on
+            continue;
+        }
+
+        int doc_fd;
+
+        // Initially check the first rev op to see if we can skip doc reversion.
+        int reset = reset_doc(doc->revisions->op);
+
+        if (reset)
+        {
+            if (QUIET == 0)
+            {
+                fprintf(stdout, "[INFO] Clear '%s'...\n", doc_path);
+            }
+
+            // Open document in blank state
+            doc_fd = openat(repo_fd, doc_path, O_WRONLY | O_TRUNC);
+            if (doc_fd == -1)
+            {
+                fprintf(stderr, "[ERROR] Failed to open %s\n", doc_path);
+
+                close(doc_fd);
+                return -1;
+            }
+        }
+        else
+        {
+            if (QUIET == 0)
+            {
+                fprintf(stdout, "[INFO] Revert '%s' to original state...\n", doc_path);
+            }
+
+            // Open doc read/write
+            doc_fd = openat(repo_fd, doc_path, O_RDWR);
+            if (doc_fd == -1)
+            {
+                fprintf(stderr, "[ERROR] Failed to open %s\n", doc_path);
+
+                close(doc_fd);
+                return -1;
+            }
+
+            // Revert to "initial state"
+            revert_doc(doc, doc_fd);
+        }
+
+        // TODO :
+        // NOTE : Will likely have to remove leading '\' from certain text being inserted or deleted
+        // - For each revision - working from first to last:
+        //   ~ Add, Delete or Retain as necessary
+        //   ~ Save changes to disk
+        //   ~ Run `git add`
+        //   ~ Run `git commit` with basic message
+
+        printf("[DEBUG] Process each revision, and `git commit`.\n");
+
+        close(doc_fd);
+    }
 
     return 0;
 }
@@ -390,10 +543,10 @@ int main(int argc, char **argv)
         {
             // TODO : Add more specific cases ? [see: `man 2 mkdir`]
             case EEXIST:
-                fprintf(stderr, "[Error %d] Directory already exists. Exiting.\n", errno);
+                fprintf(stderr, "[ERROR %d] Directory already exists. Exiting.\n", errno);
                 break;
             default:
-                fprintf(stderr, "[Error %d] Failed to create working directory. (Ref: errno-base.h) Exiting\n", errno);
+                fprintf(stderr, "[ERROR %d] Failed to create working directory. (Ref: errno-base.h) Exiting\n", errno);
         }
 
         return 2;
@@ -437,11 +590,11 @@ int main(int argc, char **argv)
     char *file_query = "SELECT id, path, contents, length(contents) AS content_len, revNum AS rev_num FROM Documents ORDER BY id ASC";
 
     // Process each target file in database
-    res = sqlite3_exec(db, file_query, process_doc_cb, &repo_fd, &sql_err);
+    res = sqlite3_exec(db, file_query, prepare_doc_cb, &repo_fd, &sql_err);
     if (res != SQLITE_OK)
     {
         fprintf(stderr, "Failed to retrieve target filenames from database\n");
-        fprintf(stderr, "[Error: SQL] %s\n", sql_err);
+        fprintf(stderr, "[ERROR: SQL] %s\n", sql_err);
 
         goto CLEANUP;
 
@@ -466,31 +619,17 @@ int main(int argc, char **argv)
     if (res != SQLITE_OK)
     {
         fprintf(stderr, "Failed to retrieve revisions from database\n");
-        fprintf(stderr, "[Error: SQL] %s\n", sql_err);
+        fprintf(stderr, "[ERROR: SQL] %s\n", sql_err);
 
         goto CLEANUP;
 
         return 3;
     }
 
-    // TODO : Process each revision for each target file
-    //
-    // - For each document:
-    //   - Open read write
-    //
-    //   - For each revision - working initially from last to first:
-    //     ~ Add, Delete or Retain as necessary (with instruction reversal)
-    //         to return to the docs "initial state"
-    //
-    //   - Save the changes to disk
-    //   - Run `git add`
-    //   - Run `git commit` with basic message
-    //
-    //   - For each revision - working from first to last:
-    //     ~ Add, Delete or Retain as necessary
-    //     ~ Save changes to disk
-    //     ~ Run `git add`
-    //     ~ Run `git commit`
+    if (process_revisions(repo_fd) != 0)
+    {
+        fprintf(stderr, "[ERROR] Processing failed. Aborting\n");
+    }
 
 CLEANUP:
 
