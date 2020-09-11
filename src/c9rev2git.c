@@ -63,6 +63,7 @@ typedef struct doc {
 mem_pool_t MEM;
 mem_pool_t STRUCT_POOL;
 mem_pool_t STRING_POOL;
+mem_pool_t SCRATCH_POOL;
 
 doc_t *DOC_LIST;
 rev_t *REV_LIST;
@@ -72,6 +73,9 @@ unsigned int REV_CNT;
 
 // Boolean to limit prints to stdout
 int QUIET = 0;
+
+// Unit Separator
+char US = 31;
 
 /* ========================================================================== */
 
@@ -101,6 +105,14 @@ BYTE * mem_push(mem_pool_t *pool, unsigned int sz)
     pool->cur += sz;
 
     return ret;
+}
+
+void mem_pop(BYTE **mem, mem_pool_t *pool, unsigned int sz)
+{
+    ASSERT(pool->cur - sz >= pool->base);
+
+    pool->cur -= sz;
+    *mem = NULL;
 }
 
 int mem_alloc(mem_pool_t *pool, unsigned long capacity)
@@ -135,6 +147,63 @@ void mem_free(mem_pool_t *pool)
 }
 
 /* ========================================================================== */
+
+/*
+ * Replace quotes around instructions with a single Unit Separator char
+ * Replace escaped characters
+ *   TODO : anything other than '\n' and '\t' ?
+ * Return parsed op len, including null terminator
+ */
+int parse_op(const char *op, char *parsed)
+{
+    int len = 0;
+
+    // Can safely skip the first char - it is always '['
+    while (*++op)
+    {
+        if (*op == '"' && *(op - 1) != '\\')
+        {
+            if (*(op + 1) == ',' || *(op + 1) == ']')
+            {
+                op++;
+            }
+            else {
+                *parsed++ = US;
+                len++;
+            }
+        }
+        else if (*op == '\\')
+        {
+            switch (*(op + 1))
+            {
+                case 'n':
+                    *parsed++ = '\n';
+                    len++;
+                    op++;
+                    break;
+                case 't':
+                    *parsed++ = '\t';
+                    len++;
+                    op++;
+                    break;
+                case '"':
+                    *parsed++ = *++op;
+                    len++;
+                    break;
+            }
+        }
+        else
+        {
+            *parsed++ = *op;
+            len++;
+        }
+    }
+
+    // Nul terminate parsed op
+    *parsed = '\0';
+
+    return ++len;
+}
 
 /*
  * sqlite3 Callback Reference:
@@ -179,11 +248,19 @@ static int process_rev_cb(void *unused, int col_cnt, char **col_data, char **col
 
     rev->num = rev_num;
 
-    // Operation strings will also be contiguous in STRING_POOL
-    // (can therefore also be accessed directly - null pointer separated)
-    rev->op = mem_push(&STRING_POOL, op_len + 1);
+    // Get some temp mem for the parsing the op
+    char *parsed = mem_push(&SCRATCH_POOL, op_len);
+    int p_len = parse_op(op, parsed);
 
-    strncpy(rev->op, op, op_len + 1);
+    // Operation strings will also be contiguous in STRING_POOL
+    // Can therefore also be accessed directly
+    //   - whole operations are "null byte" separated
+    //   - operation instructions are "unit separator" separated
+    rev->op = mem_push(&STRING_POOL, p_len);
+    strncpy(rev->op, parsed, p_len);
+
+    // Remember to clean up temp mem usage
+    mem_pop(&parsed, &SCRATCH_POOL, op_len);
 
     // Document id's are 1-indexed in the database
     doc_t *doc = DOC_LIST + doc_id - 1;
@@ -203,7 +280,7 @@ static int process_rev_cb(void *unused, int col_cnt, char **col_data, char **col
 /*
  * Process each target file
  *   - Create any directory tree as required
- *   - Store document data in memory
+ *   - Store some document data in memory
  *   - Save copy of original file to repo, for further processing
  *
  * Expects:
@@ -275,16 +352,6 @@ static int prepare_doc_cb(void *repo_fd, int col_cnt, char **col_data, char **co
 
     }
 
-    // TODO : Determine if storing the filename separately is of any worth
-//    // This will inherently account for the null terminator
-//    filename_len = cnt - dir_len;
-//
-//    // Remember to account for null terminator
-//    char filename[filename_len + 1];
-//    strncpy(filename, path + dir_len + 1, filename_len);
-//
-//    //printf("[DEBUG] dir: %-40s | filename: %-30s | doc_id: %5s\n", dir_path, filename, doc_id);
-
     // Thanks to the SQL query, we can guarantee the file paths are in
     // ascending document id order - which means they can be accessed
     // directly by index later when using DOC_LIST
@@ -309,7 +376,8 @@ static int prepare_doc_cb(void *repo_fd, int col_cnt, char **col_data, char **co
     DOC_CNT++;
 
     // Save out document in it's "final" state.
-    // Working later with revisions will initially process backwards from that state.
+    // Working later with revisions will initially process backwards
+    // from that state, or wipe the doc and start fresh.
     int save_fd = openat(*(int *)repo_fd, path, O_WRONLY | O_CREAT,
                                                 S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
@@ -336,7 +404,7 @@ int next_op_code(char **op)
 {
     while (**op)
     {
-        if (**op == '"' && *(*op - 1) != '\\')
+        if (**op == US)
         {
             // The next char is an instruction
             (*op)++;
@@ -349,7 +417,52 @@ int next_op_code(char **op)
     return 0;
 }
 
-int reset_doc(char *op)
+/*
+ * Returns retain value
+ */
+int get_retain_val(const char *val)
+{
+    const char *cur = val;
+    int len = 0;
+
+    while (*cur)
+    {
+        if (*cur == US)
+        {
+            break;
+        }
+        cur++;
+        len++;
+    }
+
+    char val_dup[len + 1];
+    strncpy(val_dup, val, len);
+    val_dup[len] = '\0';
+
+    return atoi(val_dup);
+}
+
+/*
+ * Returns character count for instruction
+ */
+int get_instruction_len(const char *cur)
+{
+    int len = 0;
+
+    while (*cur)
+    {
+        if (*cur == US)
+        {
+            return len;
+        }
+        cur++;
+        len++;
+    }
+
+    return len;
+}
+
+int reset_check(char *op)
 {
     // If instruction is an insertion ('i'), with no preceding or trailing retain ('r'),
     // then we know the revision process began with an empty document
@@ -367,32 +480,219 @@ int reset_doc(char *op)
     return true;
 }
 
-int revert_doc(doc_t *doc, int doc_fd)
+/*
+ * Process each revision from last to first, with inverted operations
+ */
+int revert_doc(int repo_fd, doc_t *doc)
 {
-    // TODO :
-    // NOTE : Will likely have to remove leading '\' from certain text being inserted or deleted
-    //   - For each revision - working initially from last to first:
-    //     ~ Add, Delete or Retain as necessary (with instruction reversal)
-    //         to return to the docs "initial state"
+#ifdef DEBUG
+    // Save a backup of the original
+    char bak_name[255] = {0};
+    sprintf(bak_name, "%s.bak", doc->save_path);
+    int bak_fd = openat(repo_fd, bak_name, O_CREAT | O_WRONLY | O_TRUNC,
+                                           S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+#endif
 
-    // Process each revision from last to first, with inverted operations
+    for (int i = doc->rev_cnt -1; i >= 0; i--)
+    {
+        // Read a copy of doc into memory
+        int read_fd = openat(repo_fd, doc->save_path, O_RDONLY);
+        if (read_fd == -1)
+        {
+            fprintf(stderr, "[ERROR %d] Failed to open document for copying!\n", errno);
+            return false;
+        }
 
+        struct stat rs;
+        if (fstat(read_fd, &rs) == -1)
+        {
+            fprintf(stderr, "Failed to retrieve document file stats.\n");
+            return false;
+        }
 
+        char *read_copy = mem_push(&SCRATCH_POOL, rs.st_size);
+        read(read_fd, read_copy, rs.st_size);
+#ifdef DEBUG
+        write(bak_fd, read_copy, rs.st_size);
+        close(bak_fd);
+#endif
+        close(read_fd);
+
+        // Overwrite original doc
+        int write_fd = openat(repo_fd, doc->save_path, O_WRONLY | O_TRUNC);
+        if (write_fd == -1)
+        {
+            fprintf(stderr, "[ERROR %d] Couldn't open file for writing!\n", errno);
+            return false;
+        }
+
+        rev_t *rev = doc->revisions + i;
+
+        char *cur = rev->op;
+
+        printf("\t[DEBUG] Reverse revision:\n\t\t");
+
+        while(next_op_code(&cur))
+        {
+            printf("'%c': ", *cur);
+
+            char *buffer = NULL;
+            int len;
+
+            // Remember 'i' and 'd' must be swapped here
+            switch(*cur)
+            {
+                case 'i':
+                    len = get_instruction_len(++cur);
+
+                    printf("%.*s", len, cur);
+
+                    // Skip 'len' letters after read cursor
+                    read_copy += len;
+                    break;
+                case 'd':
+                    len = get_instruction_len(++cur);
+
+                    printf("%.*s", len, cur);
+
+                    // Write from op instruction
+                    write(write_fd, cur, len);
+                    break;
+                case 'r':
+                    len = get_retain_val(++cur);
+
+                    printf("%-5d", len);
+
+                    // Write from original
+                    write(write_fd, read_copy, len);
+
+                    // Move read cursor forward
+                    read_copy += len;
+                    break;
+            }
+
+            printf(" | ");
+        }
+
+        printf("\n");
+
+        // Save changes
+        close(write_fd);
+        mem_pop(&read_copy, &SCRATCH_POOL, rs.st_size);
+    }
 
     return 0;
 }
 
 /*
- * Ops are square-bracketed, comma delimited, double quoted strings.
+ * Process each revision from first to last
+ * Commit changes to git repo
+ */
+int revise_and_commit(int repo_fd, doc_t *doc)
+{
+    for (int i = 0; i < doc->rev_cnt; i++)
+    {
+        // Read a copy of doc into memory
+        int read_fd = openat(repo_fd, doc->save_path, O_RDONLY);
+        if (read_fd == -1)
+        {
+            fprintf(stderr, "[ERROR %d] Failed to open document for copying!\n", errno);
+            return false;
+        }
+
+        struct stat rs;
+        if (fstat(read_fd, &rs) == -1)
+        {
+            fprintf(stderr, "Failed to retrieve document file stats.\n");
+            return false;
+        }
+
+        char *read_copy = mem_push(&SCRATCH_POOL, rs.st_size);
+        read(read_fd, read_copy, rs.st_size);
+        close(read_fd);
+
+        // Overwrite original doc
+        int write_fd = openat(repo_fd, doc->save_path, O_WRONLY | O_TRUNC);
+        if (write_fd == -1)
+        {
+            fprintf(stderr, "[ERROR %d] Couldn't open file for writing!\n", errno);
+            return false;
+        }
+
+        rev_t *rev = doc->revisions + i;
+
+        char *cur = rev->op;
+
+        printf("\t[DEBUG] New revision:\n\t\t");
+
+        while(next_op_code(&cur))
+        {
+            printf("'%c': ", *cur);
+
+            char *buffer = NULL;
+            int len;
+
+            // TODO : Determine if the switch from here and `revert_doc()`
+            // can be efficiently pulled out into a separate function
+            switch(*cur)
+            {
+                case 'i':
+                    len = get_instruction_len(++cur);
+
+                    printf("%.*s", len, cur);
+
+                    // Write from op instruction
+                    write(write_fd, cur, len);
+                    break;
+                case 'd':
+                    len = get_instruction_len(++cur);
+
+                    printf("%.*s", len, cur);
+
+                    // Skip 'len' letters after read cursor
+                    read_copy += len;
+                    break;
+                case 'r':
+                    len = get_retain_val(++cur);
+
+                    printf("%-5d", len);
+
+                    // Write from original
+                    write(write_fd, read_copy, len);
+
+                    // Move read cursor forward
+                    read_copy += len;
+                    break;
+            }
+
+            printf(" | ");
+        }
+
+        printf("\n");
+
+        // Save changes
+        close(write_fd);
+        mem_pop(&read_copy, &SCRATCH_POOL, rs.st_size);
+
+        // TODO : Prepare and commit to git repo
+        // TODO : Determine method to combine multiple revisions into one commit
+    }
+
+    return 0;
+}
+
+/*
+ * Ops are "null terminated", with "unit separated" instructions.
  * An op may consist of multiple instructions, denoted by a single
- * char at the head of each string; 'i', 'd' and 'r' for
- * "insert", "delete" and "retain" respectively.
+ * char at the head - 'i', 'd' and 'r' for "insert", "delete" and "retain" respectively.
  * 'i' and 'd' are followed by the text to insert or delete.
  * 'r' is followed by an integer character count.
  */
 int process_revisions(int repo_fd)
 {
-    for (doc_t *doc = DOC_LIST; doc < DOC_LIST + DOC_CNT; doc++)
+    //for (doc_t *doc = DOC_LIST; doc < DOC_LIST + DOC_CNT; doc++)
+    // NOTE : DEBUG : only test the last few docs
+    for (doc_t *doc = DOC_LIST + 50; doc < DOC_LIST + DOC_CNT; doc++)
     {
         char *doc_path = doc->save_path;
 
@@ -412,7 +712,7 @@ int process_revisions(int repo_fd)
         int doc_fd;
 
         // Initially check the first rev op to see if we can skip doc reversion.
-        int reset = reset_doc(doc->revisions->op);
+        int reset = reset_check(doc->revisions->op);
 
         if (reset)
         {
@@ -421,15 +721,15 @@ int process_revisions(int repo_fd)
                 fprintf(stdout, "[INFO] Clear '%s'...\n", doc_path);
             }
 
-            // Open document in blank state
+            // Revert document to blank state
             doc_fd = openat(repo_fd, doc_path, O_WRONLY | O_TRUNC);
             if (doc_fd == -1)
             {
                 fprintf(stderr, "[ERROR] Failed to open %s\n", doc_path);
-
                 close(doc_fd);
                 return -1;
             }
+            close(doc_fd);
         }
         else
         {
@@ -438,31 +738,13 @@ int process_revisions(int repo_fd)
                 fprintf(stdout, "[INFO] Revert '%s' to original state...\n", doc_path);
             }
 
-            // Open doc read/write
-            doc_fd = openat(repo_fd, doc_path, O_RDWR);
-            if (doc_fd == -1)
-            {
-                fprintf(stderr, "[ERROR] Failed to open %s\n", doc_path);
-
-                close(doc_fd);
-                return -1;
-            }
-
             // Revert to "initial state"
-            revert_doc(doc, doc_fd);
+            revert_doc(repo_fd, doc);
         }
-
-        // TODO :
-        // NOTE : Will likely have to remove leading '\' from certain text being inserted or deleted
-        // - For each revision - working from first to last:
-        //   ~ Add, Delete or Retain as necessary
-        //   ~ Save changes to disk
-        //   ~ Run `git add`
-        //   ~ Run `git commit` with basic message
 
         printf("[DEBUG] Process each revision, and `git commit`.\n");
 
-        close(doc_fd);
+        revise_and_commit(repo_fd, doc);
     }
 
     return 0;
@@ -515,11 +797,12 @@ int main(int argc, char **argv)
     }
 
     // Initialise main memory
-    mem_alloc(&MEM, MEGABYTE(1));
+    mem_alloc(&MEM, MEGABYTE(2));
 
-    // Initialise two sub-pools
+    // Initialise sub-pools
     mem_sub_alloc(&MEM, &STRUCT_POOL, KILOBYTE(512));
     mem_sub_alloc(&MEM, &STRING_POOL, KILOBYTE(512));
+    mem_sub_alloc(&MEM, &SCRATCH_POOL, KILOBYTE(512));
 
     char *filepath = argv[optind];
     sqlite3 *db;
