@@ -491,6 +491,11 @@ int revert_doc(int repo_fd, doc_t *doc)
     sprintf(bak_name, "%s.bak", doc->save_path);
     int bak_fd = openat(repo_fd, bak_name, O_CREAT | O_WRONLY | O_TRUNC,
                                            S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
+    if (QUIET == 0)
+    {
+        fprintf(stdout, "[DEBUG] Saving backup as '%s'...\n", bak_name);
+    }
 #endif
 
     for (int i = doc->rev_cnt -1; i >= 0; i--)
@@ -530,12 +535,8 @@ int revert_doc(int repo_fd, doc_t *doc)
 
         char *cur = rev->op;
 
-        printf("\t[DEBUG] Reverse revision:\n\t\t");
-
         while(next_op_code(&cur))
         {
-            printf("'%c': ", *cur);
-
             char *buffer = NULL;
             int len;
 
@@ -545,23 +546,17 @@ int revert_doc(int repo_fd, doc_t *doc)
                 case 'i':
                     len = get_instruction_len(++cur);
 
-                    printf("%.*s", len, cur);
-
                     // Skip 'len' letters after read cursor
                     read_copy += len;
                     break;
                 case 'd':
                     len = get_instruction_len(++cur);
 
-                    printf("%.*s", len, cur);
-
                     // Write from op instruction
                     write(write_fd, cur, len);
                     break;
                 case 'r':
                     len = get_retain_val(++cur);
-
-                    printf("%-5d", len);
 
                     // Write from original
                     write(write_fd, read_copy, len);
@@ -570,11 +565,7 @@ int revert_doc(int repo_fd, doc_t *doc)
                     read_copy += len;
                     break;
             }
-
-            printf(" | ");
         }
-
-        printf("\n");
 
         // Save changes
         close(write_fd);
@@ -623,12 +614,8 @@ int revise_and_commit(int repo_fd, doc_t *doc)
 
         char *cur = rev->op;
 
-        printf("\t[DEBUG] New revision:\n\t\t");
-
         while(next_op_code(&cur))
         {
-            printf("'%c': ", *cur);
-
             char *buffer = NULL;
             int len;
 
@@ -639,23 +626,17 @@ int revise_and_commit(int repo_fd, doc_t *doc)
                 case 'i':
                     len = get_instruction_len(++cur);
 
-                    printf("%.*s", len, cur);
-
                     // Write from op instruction
                     write(write_fd, cur, len);
                     break;
                 case 'd':
                     len = get_instruction_len(++cur);
 
-                    printf("%.*s", len, cur);
-
                     // Skip 'len' letters after read cursor
                     read_copy += len;
                     break;
                 case 'r':
                     len = get_retain_val(++cur);
-
-                    printf("%-5d", len);
 
                     // Write from original
                     write(write_fd, read_copy, len);
@@ -664,11 +645,7 @@ int revise_and_commit(int repo_fd, doc_t *doc)
                     read_copy += len;
                     break;
             }
-
-            printf(" | ");
         }
-
-        printf("\n");
 
         // Save changes
         close(write_fd);
@@ -709,8 +686,6 @@ int process_revisions(int repo_fd)
             continue;
         }
 
-        int doc_fd;
-
         // Initially check the first rev op to see if we can skip doc reversion.
         int reset = reset_check(doc->revisions->op);
 
@@ -722,7 +697,7 @@ int process_revisions(int repo_fd)
             }
 
             // Revert document to blank state
-            doc_fd = openat(repo_fd, doc_path, O_WRONLY | O_TRUNC);
+            int doc_fd = openat(repo_fd, doc_path, O_WRONLY | O_TRUNC);
             if (doc_fd == -1)
             {
                 fprintf(stderr, "[ERROR] Failed to open %s\n", doc_path);
@@ -738,11 +713,15 @@ int process_revisions(int repo_fd)
                 fprintf(stdout, "[INFO] Revert '%s' to original state...\n", doc_path);
             }
 
-            // Revert to "initial state"
+            // Revert to initial state
             revert_doc(repo_fd, doc);
         }
 
         printf("[DEBUG] Process each revision, and `git commit`.\n");
+        if (QUIET == 0)
+        {
+            fprintf(stdout, "[INFO] Process Revisions for '%s'...\n", doc_path);
+        }
 
         revise_and_commit(repo_fd, doc);
     }
@@ -835,9 +814,6 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    // Store the repo file descriptor
-    int repo_fd = open(repo_dir, O_DIRECTORY | O_RDONLY);
-
     // Intitialise git2 library
     git_libgit2_init();
 
@@ -849,10 +825,8 @@ int main(int argc, char **argv)
         fprintf(stdout, "[INFO] Initialising git repo...\n");
     }
 
-    // Temp variable for the result value of various function calls to follow
-    int res;
-
-    res = git_repository_init(&repo, repo_dir, false);
+    // Git Init
+    int res = git_repository_init(&repo, repo_dir, false);
     if (res < 0)
     {
         git2_exit_with_error(res);
@@ -862,6 +836,9 @@ int main(int argc, char **argv)
     {
         fprintf(stdout, "[INFO] Importing document data...\n");
     }
+
+    // Store the repo file descriptor
+    int repo_fd = open(repo_dir, O_DIRECTORY | O_RDONLY);
 
     char *sql_err = NULL;
 
@@ -873,8 +850,7 @@ int main(int argc, char **argv)
     char *file_query = "SELECT id, path, contents, length(contents) AS content_len, revNum AS rev_num FROM Documents ORDER BY id ASC";
 
     // Process each target file in database
-    res = sqlite3_exec(db, file_query, prepare_doc_cb, &repo_fd, &sql_err);
-    if (res != SQLITE_OK)
+    if (sqlite3_exec(db, file_query, prepare_doc_cb, &repo_fd, &sql_err) != SQLITE_OK)
     {
         fprintf(stderr, "Failed to retrieve target filenames from database\n");
         fprintf(stderr, "[ERROR: SQL] %s\n", sql_err);
@@ -898,8 +874,7 @@ int main(int argc, char **argv)
     char *rev_query = "SELECT document_id AS doc_id, revNum AS rev_num, operation AS op, length(operation) AS op_len FROM Revisions ORDER BY document_id ASC, revNum ASC";
 
     // Store data on all revisions in database
-    res = sqlite3_exec(db, rev_query, process_rev_cb, 0, &sql_err);
-    if (res != SQLITE_OK)
+    if (sqlite3_exec(db, rev_query, process_rev_cb, 0, &sql_err) != SQLITE_OK)
     {
         fprintf(stderr, "Failed to retrieve revisions from database\n");
         fprintf(stderr, "[ERROR: SQL] %s\n", sql_err);
