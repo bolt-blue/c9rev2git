@@ -14,7 +14,7 @@ Both of these will likely already be available as packages on your system.
 This can be done on a machine of your choice, or just on the 'c9' IDE.
 Open a terminal and:
     $> cd [to a directory of your choice]
-    $> git clone https://github.com/bolt-blue/cs50-fp.git
+    $> git clone https://github.com/bolt-blue/c9rev2git.git
     $> make
 
 ## Preparation
