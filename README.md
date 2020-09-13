@@ -2,8 +2,8 @@
 
 ## Description
 A simple app that converts document revisions stored in a 'c9' (or other compatible database)
-into a git repository.
-'c9' here refers to the cloud9 IDE, see [here](https://github.com/c9) for src reference.
+into a git repository.<br>
+'c9' here refers to the cloud9 IDE; see [here](https://github.com/c9) for source reference.
 
 ## Build Dependencies:
 Both of these will likely already be available as packages on your system.
@@ -13,9 +13,11 @@ Both of these will likely already be available as packages on your system.
 ## Clone and Compile
 This can be done on a machine of your choice, or just on the 'c9' IDE.
 Open a terminal and:
+```sh
     $> cd [to a directory of your choice]
     $> git clone https://github.com/bolt-blue/c9rev2git.git
     $> make
+```
 
 ## Preparation
 If working "locally", then first complete the following via the 'c9' IDE:
@@ -33,10 +35,11 @@ If working "locally", then first complete the following via the 'c9' IDE:
 ## Usage
 This assumes you are running from the build directory.
 Provisions for actual installation on your system have not been considered here.
+
 `$> ./c9rev2git [-q] [-o output-dir] database.db`
 - `-q` Suppress informational output
 - `-o` The name of the directory where the repo shall be created
 
 ## Feature Todo
 - Allow selective conversion (group several revisions into one `commit`)
-- [suggestions?]
+- [Suggestions?]
