@@ -65,6 +65,8 @@ mem_pool_t STRUCT_POOL;
 mem_pool_t STRING_POOL;
 mem_pool_t SCRATCH_POOL;
 
+git_commit **HEAD;
+
 doc_t *DOC_LIST;
 rev_t *REV_LIST;
 
@@ -81,7 +83,7 @@ char US = 31;
 
 void print_usage()
 {
-    // TODO : Have `make` insert the binary name before compilation
+    // TODO : Have `make` insert the binary name before compilation ?
     fprintf(stderr, "Usage: ./c9rev2git [-q] [-o output-dir] database.db\n");
 }
 
@@ -176,6 +178,13 @@ int parse_op(const char *op, char *parsed)
         {
             switch (*(op + 1))
             {
+                case '\\':
+                    // Preserve escaped escape sequences
+                    // TODO : Don't just allow for single-char escape sequences
+                    *parsed++ = *++op;
+                    *parsed++ = *++op;
+                    len += 2;
+                    break;
                 case 'n':
                     *parsed++ = '\n';
                     len++;
@@ -396,6 +405,167 @@ static int prepare_doc_cb(void *repo_fd, int col_cnt, char **col_data, char **co
 
 /* ========================================================================== */
 
+// TODO : Find a way to clean up the overt repetition in `git_initial_commit()`
+//        and `add_and_commit()`
+
+/*
+ * Returns:
+ *  0 : Success
+ * <0 : Failure
+ */
+int git_initial_commit(git_repository *repo)
+{
+    // Get latest repo index
+    git_index *idx;
+
+    if (git_repository_index(&idx, repo) < 0)
+    {
+        fprintf(stderr, "[ERROR] Could not open repository index. Exiting...\n");
+    }
+
+    // Prepare commit
+    git_oid tree_id, commit_id;
+    git_tree *tree;
+
+    if (git_index_write_tree(&tree_id, idx) < 0)
+    {
+        fprintf(stderr, "[ERROR] Unable to write initial tree from index\n");
+        return -2;
+    }
+
+    if (git_index_write(idx) < 0)
+    {
+        fprintf(stderr, "[ERROR] Failed to write updated repo index\n");
+        return -3;
+    }
+
+    if (git_tree_lookup(&tree, repo, &tree_id) < 0)
+    {
+        fprintf(stderr, "[ERROR] Could not look up initial tree\n");
+        return -4;
+    }
+
+    // NOTE : Defaults to using global git config, but has a fallback
+    // TODO : Allow sig to be set from command line
+    git_signature *sig;
+    if (git_signature_default(&sig, repo) < 0)
+    {
+        fprintf(stdout, "[INFO] It appears 'user.name' and 'user.email' are not set. Using 'c9rev2git' and 'bot@localhost'\n");
+
+        if (git_signature_now(&sig, "c9rev2git", "bot@localhost") < 0)
+        {
+            fprintf(stderr, "[ERROR] Failed to set 'user.name' and 'user.email'. Exiting...\n");
+            return -1;
+        }
+    }
+
+    int error = git_commit_create(&commit_id, repo, "HEAD", sig, sig,
+                                  NULL, "Initial commit", tree, 0, NULL);
+    if (error < 0)
+    {
+        fprintf(stderr, "[ERROR] Failed to create initial commit\n");
+        return -4;
+    }
+
+    // Dereference HEAD to a commit
+    //git_commit_lookup(HEAD, repo, &commit_id);
+    git_object *head_commit;
+    error = git_revparse_single(&head_commit, repo, "HEAD^{commit}");
+    *HEAD = (git_commit*)head_commit;
+
+    // Cleanup
+    git_tree_free(tree);
+    git_signature_free(sig);
+    git_index_free(idx);
+
+    return 0;
+}
+
+/*
+ * Returns:
+ *  0 : Success
+ * <0 : Failure
+ */
+int add_and_commit(git_repository *repo, char *path, int rev_num)
+{
+    // Get latest repo index
+    git_index *idx;
+
+    if (git_repository_index(&idx, repo) < 0)
+    {
+        fprintf(stderr, "[ERROR] Could not open repository index. Exiting...\n");
+    }
+
+    // Stage file
+    if (git_index_add_bypath(idx, path) < 0)
+    {
+        fprintf(stderr, "[ERROR] Failed to add %s for new commit. Exiting...\n", path);
+        return -1;
+    }
+
+    // Prepare commit
+    git_oid tree_id, commit_id;
+    git_tree *tree;
+
+    if (git_index_write_tree(&tree_id, idx) < 0)
+    {
+        fprintf(stderr, "[ERROR] Unable to write initial tree from index\n");
+        return -2;
+    }
+
+    if (git_index_write(idx) < 0)
+    {
+        fprintf(stderr, "[ERROR] Failed to write updated repo index\n");
+        return -3;
+    }
+
+    if (git_tree_lookup(&tree, repo, &tree_id) < 0)
+    {
+        fprintf(stderr, "[ERROR] Could not look up initial tree\n");
+        return -4;
+    }
+
+    // TODO : Allow sig to be set from command line
+    // NOTE : Defaults to using global git config, but has a fallback
+    git_signature *sig;
+    if (git_signature_default(&sig, repo) < 0)
+    {
+        fprintf(stdout, "[INFO] It appears 'user.name' and 'user.email' are not set. Using 'c9rev2git' and 'bot@localhost'\n");
+
+        if (git_signature_now(&sig, "c9rev2git", "bot@localhost") < 0)
+        {
+            fprintf(stderr, "[ERROR] Failed to set 'user.name' and 'user.email'. Exiting...\n");
+            return -1;
+        }
+    }
+
+    char commit_msg[255] = {0};
+    sprintf(commit_msg, "./%s [rev: %d]", path, rev_num);
+
+    int error = git_commit_create(&commit_id, repo, "HEAD", sig, sig,
+                                  NULL, commit_msg, tree, 1, (const git_commit **)HEAD);
+    if (error < 0)
+    {
+        fprintf(stderr, "[ERROR %d] Failed to create commit for %s\n", error, path);
+        return -4;
+    }
+
+    // Dereference HEAD to a commit
+    //git_commit_lookup(HEAD, repo, &commit_id);
+    git_object *head_commit;
+    error = git_revparse_single(&head_commit, repo, "HEAD^{commit}");
+    *HEAD = (git_commit*)head_commit;
+
+    // Cleanup
+    git_tree_free(tree);
+    git_signature_free(sig);
+    git_index_free(idx);
+
+    return 0;
+}
+
+/* ========================================================================== */
+
 /*
  * Modify 'op' pointer to point at the next instruction char.
  * Returns: 1 for success, 0 for failure
@@ -474,7 +644,6 @@ int reset_check(char *op)
             // The revisions do not start from a "clean slate"
             // and require full processing
             return false;
-            break;
         }
     }
     return true;
@@ -579,7 +748,7 @@ int revert_doc(int repo_fd, doc_t *doc)
  * Process each revision from first to last
  * Commit changes to git repo
  */
-int revise_and_commit(int repo_fd, doc_t *doc)
+int revise_and_commit(int repo_fd, doc_t *doc, git_repository *repo)
 {
     for (int i = 0; i < doc->rev_cnt; i++)
     {
@@ -651,8 +820,12 @@ int revise_and_commit(int repo_fd, doc_t *doc)
         close(write_fd);
         mem_pop(&read_copy, &SCRATCH_POOL, rs.st_size);
 
-        // TODO : Prepare and commit to git repo
+        // Update repo
         // TODO : Determine method to combine multiple revisions into one commit
+        if (add_and_commit(repo, doc->save_path, rev->num) < 0)
+        {
+            return -1;
+        }
     }
 
     return 0;
@@ -665,24 +838,25 @@ int revise_and_commit(int repo_fd, doc_t *doc)
  * 'i' and 'd' are followed by the text to insert or delete.
  * 'r' is followed by an integer character count.
  */
-int process_revisions(int repo_fd)
+int process_revisions(int repo_fd, git_repository *repo)
 {
-    //for (doc_t *doc = DOC_LIST; doc < DOC_LIST + DOC_CNT; doc++)
-    // NOTE : DEBUG : only test the last few docs
-    for (doc_t *doc = DOC_LIST + 50; doc < DOC_LIST + DOC_CNT; doc++)
+    for (doc_t *doc = DOC_LIST; doc < DOC_LIST + DOC_CNT; doc++)
     {
         char *doc_path = doc->save_path;
 
-        if (QUIET == 0)
-        {
-            fprintf(stdout, "[INFO] Processing revisions for '%s'...\n", doc_path);
-        }
-
         if (doc->rev_num == 0)
         {
-            // TODO
-            printf("[DEBUG] `git commit` doc with no revisions.\n");
-            // `git commit` revisionless docs and move on
+            if (QUIET == 0)
+            {
+                fprintf(stdout, "[INFO] No revisions for '%s'. Simply `add` and `commit`...\n", doc_path);
+            }
+
+            // Revisionless doc
+            if (add_and_commit(repo, doc->save_path, 0) < 0)
+            {
+                return -1;
+            }
+
             continue;
         }
 
@@ -717,13 +891,12 @@ int process_revisions(int repo_fd)
             revert_doc(repo_fd, doc);
         }
 
-        printf("[DEBUG] Process each revision, and `git commit`.\n");
         if (QUIET == 0)
         {
             fprintf(stdout, "[INFO] Process Revisions for '%s'...\n", doc_path);
         }
 
-        revise_and_commit(repo_fd, doc);
+        revise_and_commit(repo_fd, doc, repo);
     }
 
     return 0;
@@ -788,7 +961,7 @@ int main(int argc, char **argv)
 
     if (QUIET == 0)
     {
-        fprintf(stdout, "[INFO] Opening database: %s\n", filepath);
+        fprintf(stdout, "[INFO] Open database: %s\n", filepath);
     }
 
     if (sqlite3_open(filepath, &db) != SQLITE_OK)
@@ -822,19 +995,24 @@ int main(int argc, char **argv)
 
     if (QUIET == 0)
     {
-        fprintf(stdout, "[INFO] Initialising git repo...\n");
+        fprintf(stdout, "[INFO] Initialise git repo...\n");
     }
 
-    // Git Init
+    HEAD = (git_commit **)mem_push(&SCRATCH_POOL, sizeof(git_commit **));
+
+    // Git Init Repo
     int res = git_repository_init(&repo, repo_dir, false);
     if (res < 0)
     {
         git2_exit_with_error(res);
+        goto CLEANUP;
     }
+
+    git_initial_commit(repo);
 
     if (QUIET == 0)
     {
-        fprintf(stdout, "[INFO] Importing document data...\n");
+        fprintf(stdout, "[INFO] Import document data...\n");
     }
 
     // Store the repo file descriptor
@@ -852,8 +1030,8 @@ int main(int argc, char **argv)
     // Process each target file in database
     if (sqlite3_exec(db, file_query, prepare_doc_cb, &repo_fd, &sql_err) != SQLITE_OK)
     {
-        fprintf(stderr, "Failed to retrieve target filenames from database\n");
-        fprintf(stderr, "[ERROR: SQL] %s\n", sql_err);
+        fprintf(stderr, "[ERROR] Failed to retrieve target filenames from database\n");
+        fprintf(stderr, "[SQLERR] %s\n", sql_err);
 
         goto CLEANUP;
 
@@ -884,7 +1062,7 @@ int main(int argc, char **argv)
         return 3;
     }
 
-    if (process_revisions(repo_fd) != 0)
+    if (process_revisions(repo_fd, repo) != 0)
     {
         fprintf(stderr, "[ERROR] Processing failed. Aborting\n");
     }
@@ -899,10 +1077,9 @@ CLEANUP:
     sqlite3_free(sql_err);
     sqlite3_close(db);
 
-    // Free repo initialsed by libgit2
     git_repository_free(repo);
 
-    // Clean up libgit2 state (not strictly necessary)
+    // Clean up libgit2 global state (not strictly necessary)
     git_libgit2_shutdown();
 
     close(repo_fd);
