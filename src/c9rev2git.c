@@ -1,5 +1,3 @@
-/* Ref: https://www.tutorialspoint.com/sqlite/sqlite_c_cpp.htm */
-
 #include <unistd.h>     // getopt
 
 #include <errno.h>
@@ -13,6 +11,15 @@
 #include <git2.h>
 
 #include <sqlite3.h>
+
+/* ========================================================================== */
+
+/*
+ * Reference:
+ * - https://libgit2.org/docs/
+ * - https://www.sqlite.org/docs.html
+ * - https://www.tutorialspoint.com/sqlite/sqlite_c_cpp.htm
+ */
 
 /* ========================================================================== */
 
