@@ -5,18 +5,27 @@ A simple app that converts document revisions stored in a 'c9' (or other compati
 into a git repository.<br>
 'c9' here refers to the cloud9 IDE; see [here](https://github.com/c9) for source reference.
 
-## Build Dependencies:
+## Build Dependencies
 Both of these will likely already be available as packages on your system.
 - [libgit2](https://github.com/libgit2/libgit2)
 - [sqlite3](https://sqlite.org/src/doc/trunk/README.md)
+
+### Note
+If you choose to use this directly from the IDE, `sqlite3.h` is already available.
+To get `libgit2` (at time of writing), you can run:
+```sh
+#> apt-get install libgit2-26
+OR
+#> apt-get install libgit2-dev
+```
 
 ## Clone and Compile
 This can be done on a machine of your choice, or just on the 'c9' IDE.
 Open a terminal and:
 ```sh
-    $> cd [to a directory of your choice]
-    $> git clone https://github.com/bolt-blue/c9rev2git.git
-    $> make
+$> cd [to a directory of your choice]
+$> git clone https://github.com/bolt-blue/c9rev2git.git
+$> make
 ```
 
 ## Preparation
