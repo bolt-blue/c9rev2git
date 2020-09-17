@@ -13,7 +13,7 @@ Both of these will likely already be available as packages on your system.
 ### Note
 If you choose to use this directly from the IDE, `sqlite3.h` is already available.
 To get `libgit2` (at time of writing), you can run:
-```sh
+```
 #> apt-get install libgit2-26
 OR
 #> apt-get install libgit2-dev
@@ -22,7 +22,7 @@ OR
 ## Clone and Compile
 This can be done on a machine of your choice, or just on the 'c9' IDE.
 Open a terminal and:
-```sh
+```
 $> cd [to a directory of your choice]
 $> git clone https://github.com/bolt-blue/c9rev2git.git
 $> make
